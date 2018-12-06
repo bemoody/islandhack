@@ -1,0 +1,52 @@
+islandhack
+----------
+
+This is a little perl script designed for running obstinate
+installation scripts that insist on downloading stuff from the Web, in
+situations where you can't or don't want to download anything from the
+Web.
+
+It works by running an HTTP proxy server which serves everything from
+a local cache directory.  You can populate this cache directory ahead
+of time using 'wget', or you can use 'islandhack --update' to populate
+it automatically.
+
+For weird clients like git, you can also provide CGI scripts to handle
+specific requests.
+
+When the client tries to connect to an HTTPS server, islandhack does
+various things to try to persuade the program that its insecure
+connection is in fact secure.  This should work for most programs
+using OpenSSL or GnuTLS on Debian, Fedora, and derived systems, and
+for Java programs using the standard library.  It may or may not work
+with other libraries and on other distributions.
+
+(If you find a program/library that doesn't work, and there's an easy
+way to kludge around it - setting environment variables, overriding
+library functions - please let me know.)
+
+If facing a really stubborn program that insists on using secure
+connections (the horror!), you might consider creating a fake CA and
+installing it system-wide, and making its private key available to
+islandhack.  This of course wrecks the security of your entire system,
+but you could do so safely inside a container or VM.  That's beyond
+the scope of this program.
+
+
+History
+-------
+
+ 0.3 (2018-12-06):
+   - Fake certificates now include a subjectAltName.
+   - 'openssl genrsa' command line is compatible with newer openssl
+     versions.
+
+ 0.2 (2018-04-04):
+   - HTTPS connections are closed properly, and avoid the 'close() on
+     unopened filehandle' error.
+   - Higher error status values take precedence over lower ones.
+   - The preload library is renamed to libislandhack.so.0, and can be
+     installed for multiple architectures in parallel.
+
+ 0.1 (2017-02-17):
+   - Initial release.

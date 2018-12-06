@@ -1,0 +1,255 @@
+.TH ISLANDHACK 1 "February 2017" "islandhack 0.1"
+.SH NAME
+islandhack \- run a program under a strictly caching proxy
+.SH SYNOPSIS
+\fBislandhack\fR \fB-d\fR \fIdir\fR [ \fIoptions\fR ]
+[ -- ] \fIcommand\fR ...
+.SH DESCRIPTION
+\fBislandhack\fR runs a command in an environment that provides
+simulated access to HTTP and FTP sites, serving all files from a local
+cache.  It can be used to run programs that expect to be able to
+download particular files from the Web, without actually relying on
+remote servers or connecting to an outside network at all.
+.PP
+Various variables are set in the command's environment which instruct
+the command to use a local server as an HTTP proxy.  That server
+handles requests for HTTP, FTP, and (if possible) HTTPS resources,
+sending back the contents of files that are stored in the cache
+directory.
+.PP
+In ``update'' mode, all resources that the program requests will be
+automatically downloaded from their respective origin servers, and
+stored in the cache.  (Previously cached files will not be
+re-validated.)  Even in update mode, requests that cannot be cached
+(such as POST requests) will be refused.  This means that after
+running a command once in update mode, it should then be possible to
+run the same command again, reusing the cache, and get the same
+results, without accessing the network at all.
+.SH OPTIONS
+Options to \fBislandhack\fR must precede the name of the command.
+.TP
+\fB-d\fR, \fB--cache\fR \fIdirectory\fR
+Read cached data and server rules from the given directory.  This
+directory must already exist.  See ``CACHE DIRECTORY'' below for
+details of the directory contents.
+.TP
+\fB-l\fR, \fB--log\fR \fIfile\fR
+Write a log of network requests, including missing files and the
+corresponding commands to retrieve them, to the given file.
+.TP
+\fB-u\fR, \fB--update\fR
+Automatically download any files that are missing, and store them in
+the cache directory.  The cache directory must be writable.
+.TP
+\fB--no-https\fR
+Disable HTTPS support; refuse attempts to establish encrypted
+connections through the proxy.
+.TP
+\fB--ca-cert\fR \fIcert-file\fR
+Use the given file (which should be a self-signed certificate) as the
+root certificate authority when generating fake server certificates.
+\fB--ca-key\fR must also be specified.  If this is not provided, a
+temporary certificate is created and used.
+.TP
+\fB--ca-key\fR \fIkey-file\fR
+Use the given file as the private key for signing fake server
+certificates.
+.SH CACHE DIRECTORY
+The directory specified by the \fB--cache\fR option should contain all
+files that the client program requests.  These files are placed in
+subdirectories according to the origin host, optionally preceded by
+the protocol.  For example, `http://example.com/foo' could be stored
+as either `example.com/foo' or `http/example.com/foo'.  The format is
+intended to be compatible with the mirroring options of \fBwget\fR(1).
+.PP
+Directory index files must be named `index.html'.  They must be
+created explicitly if desired.
+.PP
+If a query string (following `?') is included in the URL, and there is
+a cached file with that exact query string, that file will be used.
+Otherwise, if there is a cached file with the same path and no query
+string, that file will be used instead.
+.SH SERVER RULES
+Sometimes client programs may require specific HTTP responses beyond
+what simple file caching can provide.  \fBgit-clone\fR(1), for
+instance, attempts to tunnel its own file transfer protocol through
+HTTP.
+.PP
+If a file called `RULES' is present in the cache directory, it can be
+used to define the rules for special HTTP responses.  Additional files
+named `RULES.\fIsuffix\fR' will also be loaded, in order.
+.PP
+A `rule' is defined by a regular expression (which must match the URL
+requested by the client), followed by an action, which can be either
+an HTTP response code, or a command to invoke (denoted by `!'.)  The
+regular expression must appear at the start of the line; the command
+may be split onto multiple lines so long as each line begins with
+whitespace.
+.PP
+For example, the rule
+.PP
+.nf
+.RS
+http://example\\.com/invalid/.* 404
+.RE
+.fi
+.PP
+will cause \fBislandhack\fR to report the status `404 Not Found' for
+any URL beginning with `http://example.com/invalid/'.  To serve a
+collection of \fBgit\fR repositories, one might use:
+.PP
+.nf
+.RS
+http://example\\.com/git/.*
+.RS
+! GIT_HTTP_EXPORT_ALL=1 git http-backend
+.RE
+.RE
+.fi
+.PP
+If the regular expression contains subexpressions enclosed in
+parentheses, the positional parameters ($1, $2, ...) will contain the
+corresponding substrings of the original URL.
+.SH ENVIRONMENT
+The following variables control the behavior of \fBislandhack\fR:
+.TP
+\fBISLANDHACK_CACHE\fR
+Cache directory, if not specified by the \fB--cache\fR option.
+.TP
+\fBISLANDHACK_LOG\fR
+Log file, if not specified by the \fB--log\fR option.
+.TP
+\fBISLANDHACK_AUTO_UPDATE\fR
+Set to `1' to automatically download missing files.
+.TP
+\fBISLANDHACK_HTTPS\fR
+Set to `0' to disable HTTPS support.
+.TP
+\fBISLANDHACK_CA_CERT\fR
+File containing the fake CA certificate.
+.TP
+\fBISLANDHACK_CA_KEY\fR
+File containing the fake CA private key.
+.TP
+\fBISLANDHACK_SYS_CA_PREFIX\fR
+Directory containing the system database of trusted certificate
+authorities.  If this is not defined, \fBislandhack\fR will try to
+guess.
+.PP
+The following variables are defined when running the client program:
+.TP
+\fBhttp_proxy\fR, \fBhttps_proxy\fR, \fBftp_proxy\fR, \fBHTTP_PROXY\fR, \fBHTTPS_PROXY\fR, \fBFTP_PROXY\fR
+The protocol and address of the islandhack proxy server, such as
+`http://127.0.0.1:34567/'.
+.TP
+\fBSSL_CERT_FILE\fB, \fBCURL_CA_BUNDLE\fR
+The name of the fake CA certificate file.
+.TP
+\fBSSL_CERT_DIR\fR
+The directory containing the fake CA certificate.
+.TP
+\fBJAVA_TOOL_OPTIONS\fR
+System property settings for the Java virtual machine, defining the
+address of the proxy server and location of the CA certificate.
+.TP
+\fBLD_PRELOAD\fR
+The path to the `islandhack-io' library, which will attempt to force
+programs to recognize the fake CA, in case they do not honor the above
+environment variables.
+.PP
+When invoking CGI scripts, the following variables are defined:
+.TP
+\fBGATEWAY_INTERFACE\fR
+Always set to `CGI/1.1'.
+.TP
+\fBREMOTE_ADDR\fR
+Always set to `127.0.0.1'.
+.TP
+\fBREQUEST_METHOD\fR
+The HTTP method, such as `GET', `HEAD', or `POST'.
+.TP
+\fBSERVER_NAME\fR
+The name of the requested server.
+.TP
+\fBSERVER_PORT\fR
+The port number of the requested server.
+.TP
+\fBSCRIPT_NAME\fR
+Always set to `/'.
+.TP
+\fBPATH_INFO\fR
+The path of the requested resource (the portion of the URL
+between the host/port, and the `?').
+.TP
+\fBPATH_TRANSLATED\fR
+The path where the requested file would be stored within the cache
+directory (not including the query string), even if this file does not
+exist.
+.TP
+\fBQUERY_STRING\fR
+The query string (the portion of the URL following `?', if any).
+.TP
+\fBSERVER_PROTOCOL\fR
+Always set to `HTTP/1.1'.
+.TP
+\fBSERVER_SOFTWARE\fR
+The name and version of \fBislandhack\fR.
+.TP
+\fBCONTENT_TYPE\fR
+The content type of the request body, if any.
+.TP
+\fBCONTENT_LENGTH\fR
+The length of the request body, if any.
+.TP
+\fBHTTP_\fIheader\fR
+The value of the given request header, with all letters uppercase and
+dashes replaced with underscores; for example, if the request includes
+a `User-Agent' header, the variable \fBHTTP_USER_AGENT\fR will be
+defined.
+.SH EXIT STATUS
+The following status values indicate problems with one or more proxy
+requests:
+.IP 200
+One or more files that the client requested were not previously
+cached; the \fB--update\fR option was specified, and these files were
+successfully downloaded into the cache.
+.IP 201
+One or more files that the client requested were not found; we
+attempted to download these files, but were unable to do so.  The
+status `502 Bad Gateway' was reported to the client.
+.IP 202
+One or more files that the client requested were not found, and the
+\fB--update\fR option was not specified.  The status `503 Service
+Unavailable' was reported to the client.
+.IP 203
+One or more requests from the client used an invalid URL, or an HTTP
+method other than `GET' or `HEAD'.  The status `400 Bad Request' was
+reported to the client.
+.IP 204
+An internal error occurred, such as being unable to write a cache file
+or invoke a CGI script.  The status `500 Internal Server Error' was
+reported to the client.
+.PP
+If all requests are successful, the exit status of \fBislandhack\fR is
+the exit status of the client command.
+.SH CAVEATS
+\fBislandhack\fR does not attempt to actually prevent programs from
+connecting to the outside network; it merely provides environment
+variables that well-behaved programs will respect.
+.PP
+It is not possible, in general, to fake the result of an HTTPS
+request; there is no standard environment variable to define what
+certificates should be trusted.  \fBislandhack\fR attempts to cover
+the most common cases by setting environment variables that many
+programs will respect, and using an LD_PRELOAD library to trick other
+programs into believing its fake certificates are actually installed
+in the system CA database.  This will not work for all clients.
+.PP
+If a file is requested in \fB--update\fR mode, and the origin server
+returns an error (such as `404 Not Found'), that response is not
+automatically cached.  This will result in a `502 Bad Gateway'
+response and an unsuccessful exit status.  If the program is expected
+to request files that do not exist, these must be listed explicitly in
+the rules file.
+.SH AUTHOR
+Benjamin Moody

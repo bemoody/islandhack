@@ -1,0 +1,709 @@
+#!/usr/bin/perl -w
+#
+# islandhack - run a program under a strictly caching HTTP proxy
+#
+# Copyright (c) 2018 Benjamin Moody
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+# or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Affero General Public
+# License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+use strict;
+
+use HTTP::Daemon;
+use HTTP::Response;
+use URI::Escape qw(uri_escape uri_unescape);
+use URI;
+use IO::Select;
+use IO::Socket::INET qw(inet_ntoa SHUT_WR :crlf);
+use IPC::SharedMem;
+use IPC::SysV qw(IPC_PRIVATE);
+use Cwd qw(realpath);
+use File::Basename qw(dirname);
+use File::Temp qw(tempfile tempdir);
+use File::Path qw(make_path remove_tree);
+use Fcntl qw(:seek :mode);
+# LWP::UserAgent - required if auto-updating enabled
+# IO::Socket::SSL - required if https enabled
+
+my $script_dir = dirname(realpath($0));
+my $PKGLIBDIR = $script_dir; # updated by 'make install'
+
+my @client_command;
+my $cache_dir     = $ENV{ISLANDHACK_CACHE};
+my $log_file      = $ENV{ISLANDHACK_LOG};
+my $enable_https  = $ENV{ISLANDHACK_HTTPS} // 1;
+my $auto_update   = $ENV{ISLANDHACK_AUTO_UPDATE};
+my $ca_cert_file  = $ENV{ISLANDHACK_CA_CERT};
+my $ca_key_file   = $ENV{ISLANDHACK_CA_KEY};
+
+my $VERSION = '0.3';
+my $version_info = <<EOF;
+islandhack $VERSION
+Copyright (C) 2018 Benjamin Moody
+License AGPLv3+: GNU AGPL v3 or later <http://gnu.org/licenses/agpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+EOF
+
+my $usage_info = <<EOF;
+Usage: $0 [options] command [arguments]
+
+Options:
+  -d, --cache=DIR     location of cached files (required)
+  -l, --log=FILE      name of log file
+  -u, --update        download missing files
+  --no-https          disallow HTTPS
+  --ca-cert=FILE      file containing certificate for HTTPS MITM
+  --ca-key=FILE       file containing private key for HTTPS MITM
+EOF
+
+while (@ARGV > 0) {
+    if ($ARGV[0] =~ /^-/) {
+        my $arg = shift @ARGV;
+        if ($arg eq '--') {
+            @client_command = @ARGV;
+            last;
+        }
+        elsif ($arg eq '-d' or $arg eq '--cache') {
+            $cache_dir = shift @ARGV;
+        }
+        elsif ($arg =~ /^(?:-d|--cache=)(.*)/) {
+            $cache_dir = $1;
+        }
+        elsif ($arg eq '-l' or $arg eq '--log') {
+            $log_file = shift @ARGV;
+        }
+        elsif ($arg =~ /^(?:-l|--log=)(.*)/) {
+            $log_file = $1;
+        }
+        elsif ($arg eq '-u' or $arg eq '--update') {
+            $auto_update = 1;
+        }
+        elsif ($arg eq '--no-https') {
+            $enable_https = 0;
+        }
+        elsif ($arg eq '--ca-cert') {
+            $ca_cert_file = shift @ARGV;
+        }
+        elsif ($arg =~ /^--ca-cert=(.*)/) {
+            $ca_cert_file = $1;
+        }
+        elsif ($arg eq '--ca-key') {
+            $ca_key_file = shift @ARGV;
+        }
+        elsif ($arg =~ /^--ca-key=(.*)/) {
+            $ca_key_file = $1;
+        }
+        elsif ($arg eq '--version') {
+            print $version_info;
+            exit 0;
+        }
+        elsif ($arg eq '--help') {
+            print $usage_info;
+            exit 0;
+        }
+        else {
+            print STDERR "$0: unknown option $arg\n";
+            print STDERR $usage_info;
+            exit 1;
+        }
+    }
+    else {
+        @client_command = @ARGV;
+        last;
+    }
+}
+
+if (@client_command == 0 or !defined $cache_dir) {
+    print STDERR $usage_info;
+    exit 1;
+}
+
+if (defined $ca_cert_file and !defined $ca_key_file) {
+    print STDERR "$0: cannot use --ca-cert without --ca-key\n";
+    exit 1;
+}
+elsif (defined $ca_key_file and !defined $ca_cert_file) {
+    print STDERR "$0: cannot use --ca-key without --ca-cert\n";
+    exit 1;
+}
+
+require LWP::UserAgent if $auto_update;
+require IO::Socket::SSL if $enable_https;
+
+#### initialization ####
+
+# Cache directory
+my $cachedir_handle;
+if (!opendir $cachedir_handle, $cache_dir) {
+    print STDERR "$0: cannot open $cache_dir: $!\n";
+    exit 1;
+}
+
+# Server rule files
+my @rule_files;
+while ($_ = readdir $cachedir_handle) {
+    if (/^RULES(?:\.[-\w.]+)?$/) {
+        push @rule_files, $_;
+    }
+}
+my @server_rules;
+foreach my $filename (sort @rule_files) {
+    if (open my $fh, '<', "$cache_dir/$filename") {
+        my $rule;
+        while (<$fh>) {
+            eval {
+                undef $rule if (!/\S/);
+                s/\s*$//; s/^\s*#.*//;
+                if (s/^(\S+)//) {
+                    $rule = { pattern => qr/\A$1\z/, text => [],
+                              location => "$filename:$." };
+                    push @server_rules, $rule;
+                }
+                if (/(\S.*)/) {
+                    if (!defined $rule) {
+                        die "syntax error";
+                    }
+                    push @{$rule->{text}}, $1;
+                }
+            };
+            if ($@) {
+                print STDERR "$0: $filename:$.: $@\n";
+                exit 1;
+            }
+        }
+        close $fh;
+    }
+    else {
+        print STDERR "$0: cannot read $filename: $!\n";
+        exit 1;
+    }
+}
+foreach my $rule (@server_rules) {
+    my $text = join "\n", @{$rule->{text}};
+    if ($text =~ m{^(\d+)$}) {
+        $rule->{error} = $1;
+    }
+    elsif ($text =~ m{^!\s*(.*)}s) {
+        $rule->{command} = $1;
+    }
+    else {
+        print STDERR "$0: $rule->{location}: unknown rule\n";
+        exit 1;
+    }
+}
+
+# Log file
+my $log_handle;
+if (defined $log_file) {
+    if (!open $log_handle, '>>', $log_file) {
+        print STDERR "$0: cannot write $log_file: $!\n";
+        exit 1;
+    }
+    $log_handle->autoflush(1);
+    print $log_handle "## islandhack $VERSION\n";
+}
+
+# Server socket
+my $server = HTTP::Daemon->new(LocalAddr => '127.0.0.1');
+if (!$server) {
+    print STDERR "$0: cannot create server socket: $!\n";
+    exit 1;
+}
+my $server_host = inet_ntoa($server->sockaddr);
+my $server_port = $server->sockport;
+my $server_url = "http://$server_host:$server_port/";
+
+# Server status buffer (one byte for each error condition that needs
+# to be reported back):
+my $SS_DOWNLOAD_OK = 0;
+my $SS_DOWNLOAD_FAIL = 1;
+my $SS_MISSING_FILE = 2;
+my $SS_BAD_REQUEST = 3;
+my $SS_SERVER_ERROR = 4;
+my $SSBUFSIZE = 5;
+
+my $ssbuf = IPC::SharedMem->new(IPC_PRIVATE, $SSBUFSIZE, S_IRWXU);
+if (!$ssbuf) {
+    print STDERR "$0: cannot create shared memory: $!\n";
+    exit 1;
+}
+$ssbuf->attach;
+$ssbuf->remove;
+$ssbuf->write('0' x $SSBUFSIZE, 0, $SSBUFSIZE);
+
+my $ca_tempdir;
+my $ca_conf_file;
+sub openssl {
+    my @args = map { quotemeta } @_;
+    my $data = qx(openssl @args 2>/dev/null);
+    if ($? != 0) {
+        die "'openssl @args' failed";
+    }
+    return $data;
+}
+
+sub openssl_tempfile {
+    my $data = openssl(@_);
+    my ($fh, $fname) = tempfile('tmp.XXXXXX', DIR => $ca_tempdir);
+    if (!$fh) {
+        die "cannot create temporary file: $!";
+    }
+    print $fh $data;
+    if (!close $fh) {
+        unlink $fname;
+        die "unable to write temporary file: $!";
+    }
+    return $fname;
+}
+
+# Private key and CA certificate
+if ($enable_https) {
+    if (!defined $ENV{ISLANDHACK_SYS_CA_PREFIX}) {
+        my $ver = openssl('version', '-d');
+        if ($ver =~ m{^OPENSSLDIR: "(/[^"[:cntrl:]]+)"$}m) {
+            $ENV{ISLANDHACK_SYS_CA_PREFIX} = "$1/certs/";
+        }
+    }
+
+    $ca_tempdir = tempdir('ihca.XXXXXX', TMPDIR => 1);
+    chmod S_IRWXU|S_IRGRP|S_IXGRP|S_IROTH|S_IXOTH, $ca_tempdir;
+    eval {
+        if (defined $ca_key_file and defined $ca_cert_file) {
+            die "cannot read $ca_key_file" if (! -r -f $ca_key_file);
+            die "cannot read $ca_cert_file" if (! -r -f $ca_cert_file);
+            $ca_key_file = realpath($ca_key_file);
+            $ca_cert_file = realpath($ca_cert_file);
+        }
+        else {
+            # generate a temporary key and certificate
+            $ca_key_file = openssl_tempfile(
+                'genrsa', '-rand', '/dev/urandom', '1024');
+            $ca_cert_file = openssl_tempfile(
+                'req', '-new', '-x509',
+                '-key', $ca_key_file, '-days', 30,
+                '-subj', '/CN=Islandhack MITM Authority');
+            chmod S_IRUSR|S_IRGRP|S_IROTH, $ca_cert_file;
+        }
+
+        my $hash = openssl('x509', '-noout', '-hash', '-in', $ca_cert_file);
+        chomp $hash;
+        symlink $ca_cert_file, "$ca_tempdir/$hash.0";
+
+        $ca_conf_file = "$ca_tempdir/x509.conf";
+        open CONF, '>', $ca_conf_file or die "cannot write $ca_conf_file";
+        print CONF "[exts]\nsubjectAltName = \${ENV::_islandhack_san}\n";
+        close CONF;
+    };
+    if ($@) {
+        print STDERR "$0: $@\n";
+        remove_tree($ca_tempdir);
+        exit 1;
+    }
+}
+
+#### server process ####
+
+my $client_uri_prefix;
+my $update_ua;
+
+sub log_msg {
+    if ($log_handle) {
+        print $log_handle @_, "\n";
+    }
+}
+
+sub set_status_flag {
+    $ssbuf->write('1', $_[0], 1);
+}
+
+sub handle_connect {
+    my ($client, $tls_host, $tls_port) = @_;
+
+    # Apparently no (clean, documented) way to get HTTP::Daemon to
+    # listen to an IO::Socket::SSL.  So we'll create a second
+    # connection *back* to the server, and forward raw data between
+    # that socket and the SSL socket.
+    my $backconn = IO::Socket::INET->new("$server_host:$server_port");
+    if (!$backconn) {
+        die "cannot connect to $server_host:$server_port: $!";
+    }
+
+    # send a special request to tell the server where we were
+    # originally trying to connect (note that this request itself will
+    # yield a 400)
+    print $backconn "HEAD / HTTP/1.1$CRLF";
+    print $backconn "Host: 127.0.0.1$CRLF";
+    print $backconn "X-Islandhack-TLS-Host: $tls_host:$tls_port$CRLF";
+    print $backconn "$CRLF";
+    while (<$backconn>) {
+        last if ($_ =~ /^[$CRLF]*$/);
+    }
+
+    # generate fake server certificate
+    my $key_file = $ca_key_file;
+    my $csr_file = openssl_tempfile(
+        'req', '-new', '-key', $key_file,
+        '-subj', "/CN=$tls_host");
+    $ENV{_islandhack_san} = "DNS:$tls_host";
+    my $cert_file = openssl_tempfile(
+        'x509', '-req', '-in', $csr_file,
+        '-CA', $ca_cert_file, '-CAkey', $ca_key_file,
+        '-extfile', $ca_conf_file, '-extensions', 'exts',
+        '-set_serial', '0x1111');
+
+    # acknowledge the CONNECT request and start TLS
+    $client->send_basic_header(200);
+    $client->send_crlf;
+    if (!IO::Socket::SSL->start_SSL(
+             $client,
+             SSL_server => 1,
+             SSL_cert_file => $cert_file,
+             SSL_key_file => $key_file)) {
+        unlink ($csr_file, $cert_file);
+        print STDERR "$0: TLS handshake failed\n";
+        close $client;
+        close $backconn;
+        exit;
+    }
+    unlink ($csr_file, $cert_file);
+
+    my $data;
+    my $child = fork;
+    if (!defined $child) {
+        print STDERR "$0: cannot create child process: $!";
+        set_status_flag($SS_SERVER_ERROR);
+        close $client;
+        close $backconn;
+        exit;
+    }
+    if ($child == 0) {
+        while ($backconn->sysread($data, 65536)) {
+            $client->write($data) or last;
+        }
+        $client->close(SSL_no_shutdown => 1);
+        exit;
+    }
+    while ($client->sysread($data, 65536)) {
+        $backconn->write($data) or last;
+    }
+    $backconn->shutdown(SHUT_WR);
+    waitpid $child, 0;
+    close $client;
+    close $backconn;
+    exit;
+}
+
+sub translate_path {
+    my ($uri) = @_;
+
+    my $scheme = ($uri->scheme // '');
+    if ($scheme ne 'http' and $scheme ne 'https' and $scheme ne 'ftp') {
+        return;
+    }
+
+    my $hdir = lc $uri->host;
+    if ($uri->port != $uri->default_port) {
+        $hdir .= ':' . $uri->port;
+    }
+    if (-d "$scheme/$hdir") {
+        $hdir = "$scheme/$hdir";
+    }
+
+    # attempt to match wget's (somewhat sloppy) escaping/unescaping
+    my $pfile = uri_unescape($uri->path);
+    $pfile = uri_escape($pfile, '\000-\037\177-\237');
+    $pfile =~ s{/$}{/index.html};
+    $pfile =~ s{/+(?:\./+)*}{/}g;
+    while ($pfile =~ s{/[^/]+/\.\./}{/}) { }
+    if ($pfile !~ m{^/} or $pfile =~ m{/\.\./}) {
+        return;
+    }
+    return $hdir . $pfile;
+}
+
+sub handle_request {
+    my ($client, $request, $method, $uri) = @_;
+
+    if ($method eq 'CONNECT' and $enable_https and defined $uri->host) {
+        handle_connect($client, $uri->host, $uri->port);
+        return;
+    }
+
+    if (!defined $uri->host) {
+        if (defined $client_uri_prefix) {
+            $uri = URI->new($client_uri_prefix . $uri);
+        }
+        else {
+            my $host = $request->header('X-Islandhack-TLS-Host');
+            if (defined $host) {
+                $client_uri_prefix = "https://$host";
+                $client_uri_prefix =~ s/:443$//;
+            }
+            $client->send_error(400); # Bad Request
+            return;
+        }
+    }
+
+    my $fname = translate_path($uri);
+
+    foreach my $rule (@server_rules) {
+        if (my @matchvars = ($uri =~ $rule->{pattern})) {
+            if (defined $rule->{error}) {
+                log_msg "# $method $uri ($rule->{error})";
+                $client->send_error($rule->{error});
+                return;
+            }
+            elsif (defined $rule->{command}) {
+                # write content to a temporary file
+                my $fh = tempfile();
+                print $fh $request->content;
+                seek $fh, 0, SEEK_SET;
+
+                # invoke script
+                my $pid = open my $child, '-|';
+                if (!defined $pid) {
+                    die "cannot create child process: $!";
+                }
+                if ($pid == 0) {
+                    open STDIN, '<&', $fh;
+                    $ENV{GATEWAY_INTERFACE} = 'CGI/1.1';
+                    $ENV{REMOTE_ADDR}       = '127.0.0.1';
+                    $ENV{REQUEST_METHOD}    = $method;
+                    $ENV{SERVER_NAME}       = $uri->host;
+                    $ENV{SERVER_PORT}       = $uri->port;
+                    $ENV{SCRIPT_NAME}       = '/';
+                    $ENV{PATH_INFO}         = $uri->path;
+                    $ENV{PATH_TRANSLATED}   = $fname;
+                    $ENV{QUERY_STRING}      = $uri->query;
+                    $ENV{SERVER_PROTOCOL}   = 'HTTP/1.1';
+                    $ENV{SERVER_SOFTWARE}   = "islandhack/$VERSION";
+                    $ENV{CONTENT_TYPE}   = $request->header('Content-Type');
+                    $ENV{CONTENT_LENGTH} = $request->header('Content-Length');
+                    foreach (keys %ENV) {
+                        delete $ENV{$_} if /^HTTP_/;
+                    }
+                    foreach ($request->header_field_names) {
+                        if (!/^Content-(?:Type|Length)$/i) {
+                            s/\W/_/g;
+                            $ENV{"HTTP_\U$_\E"} = $request->header($_);
+                        }
+                    }
+                    exec '/bin/sh', '-c', $rule->{command}, '-', @matchvars;
+                    exit 127;
+                }
+                close $fh;
+
+                # parse headers
+                my $response = HTTP::Response->new(200);
+                $response->request($request);
+                while (<$child>) {
+                    last if (/^\r?$/);
+                    if (/^Status:\s*(\d+)\s*([^\r\n]*)/i) {
+                        $response->code($1);
+                        $response->message($2);
+                    }
+                    elsif (/^([-a-z0-9]+):\s*([^\r\n]*)/i) {
+                        $response->header($1, $2);
+                    }
+                }
+                if (!defined $_) {
+                    close $child;
+                    die "malformed CGI response";
+                }
+                if (defined $response->header('Location')) {
+                    close $child;
+                    log_msg "# $method $uri (redirect)";
+                    $client->send_redirect($response->header('Location'));
+                    return;
+                }
+
+                # send response
+                $response->content(sub { local $/ = \4096; <$child> });
+                log_msg "# $method $uri (CGI)";
+                $client->send_response($response);
+                close $child;
+                return;
+            }
+        }
+    }
+
+    if (!defined $fname or ($method ne 'GET' and $method ne 'HEAD')) {
+        log_msg "INVALID: $method $uri";
+        set_status_flag($SS_BAD_REQUEST);
+        $client->send_error(400); # Bad Request
+        return;
+    }
+
+    my $query = uri_escape($uri->query // '', '/\000-\037\177-\237');
+    if (-f "$fname?$query") {
+        log_msg "# $method $uri";
+        $client->send_file_response("$fname?$query");
+        return;
+    }
+    elsif (-f $fname) {
+        log_msg "# $method $uri";
+        $client->send_file_response($fname);
+        return;
+    }
+
+    if (!$auto_update) {
+        log_msg "MISSING: $method $uri";
+        set_status_flag($SS_MISSING_FILE);
+        $client->send_error(503); # Service Unavailable
+        return;
+    }
+
+    if ($query ne '') {
+        $fname .= '?' . $query;
+    }
+    make_path(dirname($fname));
+    my $resp = $update_ua->mirror($uri, $fname);
+    if ($resp->is_success) {
+        log_msg "# $method $uri (downloaded)";
+        set_status_flag($SS_DOWNLOAD_OK);
+        $client->send_file_response($fname);
+    }
+    else {
+        my $msg = $resp->status_line;
+        log_msg "FAILED: $method $uri ($msg)";
+        set_status_flag($SS_DOWNLOAD_FAIL);
+        $client->send_error(502); # Bad Gateway
+    }
+}
+
+sub run_server {
+    if (!chdir $cachedir_handle) {
+        print STDERR "$0: cannot change directory: $!\n";
+        return;
+    }
+    closedir $cachedir_handle;
+
+    if ($auto_update) {
+        $update_ua = LWP::UserAgent->new;
+        $update_ua->agent("islandhack/$VERSION ");
+        $update_ua->env_proxy;
+    }
+
+    $SIG{CHLD} = 'IGNORE';
+
+    # exit when standard input is closed (indicating main process
+    # has finished or been interrupted)
+    my $sel = IO::Select->new($server, \*STDIN);
+    while (my @ready = $sel->can_read) {
+        foreach my $fh (@ready) {
+            if ($fh != $server) {
+                return;
+            }
+
+            my $client = $server->accept;
+            my $child = fork;
+            if (!defined $child) {
+                print STDERR "$0: cannot create child process: $!\n";
+                return;
+            }
+            if (!$child) {
+                $SIG{CHLD} = 'DEFAULT';
+
+                while (my $request = $client->get_request) {
+                    my $method = $request->method;
+                    my $uri = $request->uri;
+                    eval {
+                        handle_request($client, $request, $method, $uri);
+                    };
+                    if ($@) {
+                        log_msg "ERROR: $method $uri ($@)";
+                        print STDERR "$0: $@\n";
+                        set_status_flag($SS_SERVER_ERROR);
+                        $client->send_error(500); # Internal Server Error
+                    }
+                }
+                close $client;
+                exit;
+            }
+            close $client;
+        }
+    }
+}
+
+#### client process ####
+
+sub run_client {
+    my $java_flags = $ENV{JAVA_TOOL_OPTIONS} // '';
+    foreach my $proto (qw(http https ftp)) {
+        $ENV{"$proto\_proxy"} = $ENV{"\U$proto\_PROXY"} = $server_url;
+        $java_flags .= (" -D$proto.proxyHost=$server_host" .
+                        " -D$proto.proxyPort=$server_port");
+    }
+    if ($enable_https) {
+        my $lib = "libislandhack.so.0";
+        $lib = "$PKGLIBDIR/$lib" if defined $PKGLIBDIR;
+        my $preload = $ENV{LD_PRELOAD};
+        if (defined $preload and $preload ne '') {
+            $ENV{LD_PRELOAD} = "$preload:$lib";
+        }
+        else {
+            $ENV{LD_PRELOAD} = $lib;
+        }
+
+        $ENV{SSL_CERT_DIR} = $ca_tempdir;
+        $ENV{SSL_CERT_FILE} = $ca_cert_file;
+        $ENV{CURL_CA_BUNDLE} = $ca_cert_file;
+
+        my $jks_file = "$ca_tempdir/ca.jks";
+        # ignore errors (e.g. keytool not installed)
+        system ("keytool -import -file \Q$ca_cert_file\E" .
+                " -keystore \Q$jks_file\E -storepass aaaaaa" .
+                " -noprompt </dev/null 2>/dev/null");
+        $java_flags .= " -Djavax.net.ssl.trustStore=$jks_file";
+    }
+    $ENV{JAVA_TOOL_OPTIONS} = $java_flags;
+
+    system { $client_command[0] } @client_command;
+    return $?;
+}
+
+#### main process ####
+
+my $server_pid = open my $server_pipe, '|-';
+if (!defined $server_pid) {
+    print STDERR "$0: cannot create child process: $!\n";
+    remove_tree($ca_tempdir) if defined $ca_tempdir;
+    exit 1;
+}
+if ($server_pid == 0) {
+    setpgrp(0, 0);
+    run_server;
+    remove_tree($ca_tempdir) if defined $ca_tempdir;
+    kill 'TERM', -$$;
+    exit;
+}
+
+my $client_status = run_client;
+close $server_pipe;
+
+my @server_status = split //, $ssbuf->read(0, $SSBUFSIZE);
+foreach my $i (0 .. $#server_status) {
+    if ($server_status[$#server_status - $i]) {
+        exit 200 + $#server_status - $i;
+    }
+}
+if ($client_status & 127) {
+    exit (($client_status & 127) + 128);
+}
+elsif ($client_status != 0) {
+    exit ($client_status >> 8);
+}
+else {
+    exit 0;
+}
