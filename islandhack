@@ -247,11 +247,18 @@ $ssbuf->attach;
 $ssbuf->remove;
 $ssbuf->write('0' x $SSBUFSIZE, 0, $SSBUFSIZE);
 
+my $ca_use_faketime;
 my $ca_tempdir;
 my $ca_conf_file;
 sub openssl {
     my @args = map { quotemeta } @_;
-    my $data = qx(openssl @args 2>/dev/null);
+    my $openssl = 'openssl';
+    if ($ca_use_faketime) {
+        my ($S, $M, $H, $d, $m, $y) = gmtime(time - 3600);
+        $y += 1900; $m++;
+        $openssl = "TZ=UTC0 faketime -f '$y-$m-$d $H:$M:$S' $openssl";
+    }
+    my $data = qx($openssl @args 2>/dev/null);
     if ($? != 0) {
         die "'openssl @args' failed";
     }
@@ -279,6 +286,10 @@ if ($enable_https) {
         if ($ver =~ m{^OPENSSLDIR: "(/[^"[:cntrl:]]+)"$}m) {
             $ENV{ISLANDHACK_SYS_CA_PREFIX} = "$1/certs/";
         }
+    }
+
+    if (!system "TZ=UTC0 faketime -f '2001-01-01 12:00:00' true 2>/dev/null") {
+        $ca_use_faketime = 1;
     }
 
     $ca_tempdir = tempdir('ihca.XXXXXX', TMPDIR => 1);
