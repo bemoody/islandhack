@@ -31,7 +31,7 @@ use Cwd qw(realpath);
 use File::Basename qw(dirname);
 use File::Temp qw(tempfile tempdir);
 use File::Path qw(make_path remove_tree);
-use Fcntl qw(:seek :mode);
+use Fcntl qw(:seek :mode :flock);
 # LWP::UserAgent - required if auto-updating enabled
 # IO::Socket::SSL - required if https enabled
 
@@ -43,6 +43,7 @@ my $cache_dir     = $ENV{ISLANDHACK_CACHE};
 my $log_file      = $ENV{ISLANDHACK_LOG};
 my $enable_https  = $ENV{ISLANDHACK_HTTPS} // 1;
 my $auto_update   = $ENV{ISLANDHACK_AUTO_UPDATE};
+my $remember_404  = $ENV{ISLANDHACK_REMEMBER_404};
 my $ca_cert_file  = $ENV{ISLANDHACK_CA_CERT};
 my $ca_key_file   = $ENV{ISLANDHACK_CA_KEY};
 
@@ -62,6 +63,7 @@ Options:
   -d, --cache=DIR     location of cached files (required)
   -l, --log=FILE      name of log file
   -u, --update        download missing files
+  --remember-404      in --update mode, store "not-found" responses
   --no-https          disallow HTTPS
   --ca-cert=FILE      file containing certificate for HTTPS MITM
   --ca-key=FILE       file containing private key for HTTPS MITM
@@ -88,6 +90,9 @@ while (@ARGV > 0) {
         }
         elsif ($arg eq '-u' or $arg eq '--update') {
             $auto_update = 1;
+        }
+        elsif ($arg eq '--remember-404') {
+            $remember_404 = 1;
         }
         elsif ($arg eq '--no-https') {
             $enable_https = 0;
@@ -573,6 +578,17 @@ sub handle_request {
         log_msg "# $method $uri (downloaded)";
         set_status_flag($SS_DOWNLOAD_OK);
         $client->send_file_response($fname);
+    }
+    elsif ($resp->code == 404 and $remember_404) {
+        my $rname = "RULES.404";
+        my $pat = ($uri =~ s{([^-\w~@%&=:;,/])}{\\$1}gr);
+        open my $fh, '>>', $rname or die "unable to write $rname: $!";
+        flock $fh, LOCK_EX or die "unable to lock $rname: $!";
+        print $fh "$pat\t404\n";
+        close $fh or die "unable to write $rname: $!";
+        log_msg "# $method $uri (does not exist)";
+        set_status_flag($SS_DOWNLOAD_OK);
+        $client->send_error(404); # Not Found
     }
     else {
         my $msg = $resp->status_line;

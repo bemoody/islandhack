@@ -1,4 +1,4 @@
-.TH ISLANDHACK 1 "February 2017" "islandhack 0.1"
+.TH ISLANDHACK 1 "January 2019" "islandhack 0.4"
 .SH NAME
 islandhack \- run a program under a strictly caching proxy
 .SH SYNOPSIS
@@ -40,6 +40,16 @@ corresponding commands to retrieve them, to the given file.
 \fB-u\fR, \fB--update\fR
 Automatically download any files that are missing, and store them in
 the cache directory.  The cache directory must be writable.
+.IP
+Note that if the file cannot be downloaded (the origin server returns
+an error, such as `403 Forbidden' or `404 Not Found'), a `502 Bad
+Gateway' error is reported to the client.  The original error is not
+cached.
+.TP
+\fB--remember-404\fR
+If \fB--update\fR is specified, keep track of files that do not exist
+(the origin server returns a `404 Not Found' error.)  Non-existent
+URLs are written to `RULES.404' (see ``SERVER RULES'' below.)
 .TP
 \fB--no-https\fR
 Disable HTTPS support; refuse attempts to establish encrypted
@@ -244,12 +254,5 @@ the most common cases by setting environment variables that many
 programs will respect, and using an LD_PRELOAD library to trick other
 programs into believing its fake certificates are actually installed
 in the system CA database.  This will not work for all clients.
-.PP
-If a file is requested in \fB--update\fR mode, and the origin server
-returns an error (such as `404 Not Found'), that response is not
-automatically cached.  This will result in a `502 Bad Gateway'
-response and an unsuccessful exit status.  If the program is expected
-to request files that do not exist, these must be listed explicitly in
-the rules file.
 .SH AUTHOR
 Benjamin Moody
