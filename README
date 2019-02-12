@@ -36,6 +36,12 @@ the scope of this program.
 History
 -------
 
+ 0.4 (2019-02-12):
+   - If 'faketime' is installed, fake certificates are backdated by
+     one hour (in case the system clocks are not perfectly
+     synchronized between the client and server.)
+   - New option '--remember-404' to permit caching of 404 errors.
+
  0.3 (2018-12-06):
    - Fake certificates now include a subjectAltName.
    - 'openssl genrsa' command line is compatible with newer openssl
