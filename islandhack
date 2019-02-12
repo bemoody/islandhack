@@ -46,7 +46,7 @@ my $auto_update   = $ENV{ISLANDHACK_AUTO_UPDATE};
 my $ca_cert_file  = $ENV{ISLANDHACK_CA_CERT};
 my $ca_key_file   = $ENV{ISLANDHACK_CA_KEY};
 
-my $VERSION = '0.3';
+my $VERSION = '0.4';
 my $version_info = <<EOF;
 islandhack $VERSION
 Copyright (C) 2018 Benjamin Moody
