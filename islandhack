@@ -2,7 +2,7 @@
 #
 # islandhack - run a program under a strictly caching HTTP proxy
 #
-# Copyright (c) 2018 Benjamin Moody
+# Copyright (c) 2019 Benjamin Moody
 #
 # This program is free software: you can redistribute it and/or modify it
 # under the terms of the GNU Affero General Public License as published by
@@ -50,7 +50,7 @@ my $ca_key_file   = $ENV{ISLANDHACK_CA_KEY};
 my $VERSION = '0.4';
 my $version_info = <<EOF;
 islandhack $VERSION
-Copyright (C) 2018 Benjamin Moody
+Copyright (C) 2019 Benjamin Moody
 License AGPLv3+: GNU AGPL v3 or later <http://gnu.org/licenses/agpl.html>
 This is free software: you are free to change and redistribute it.
 There is NO WARRANTY, to the extent permitted by law.
