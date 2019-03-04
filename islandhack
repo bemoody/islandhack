@@ -385,7 +385,8 @@ sub handle_connect {
              $client,
              SSL_server => 1,
              SSL_cert_file => $cert_file,
-             SSL_key_file => $key_file)) {
+             SSL_key_file => $key_file,
+             SSL_ca_file => $ca_cert_file)) {
         unlink ($csr_file, $cert_file);
         print STDERR "$0: TLS handshake failed\n";
         close $client;
