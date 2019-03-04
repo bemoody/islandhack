@@ -29,7 +29,7 @@ use IPC::SharedMem;
 use IPC::SysV qw(IPC_PRIVATE);
 use Cwd qw(realpath);
 use File::Basename qw(dirname);
-use File::Temp qw(tempfile tempdir);
+use File::Temp qw(tempfile tempdir tmpfile);
 use File::Path qw(make_path remove_tree);
 use Fcntl qw(:seek :mode :flock);
 # LWP::UserAgent - required if auto-updating enabled
@@ -46,6 +46,7 @@ my $auto_update   = $ENV{ISLANDHACK_AUTO_UPDATE};
 my $remember_404  = $ENV{ISLANDHACK_REMEMBER_404};
 my $ca_cert_file  = $ENV{ISLANDHACK_CA_CERT};
 my $ca_key_file   = $ENV{ISLANDHACK_CA_KEY};
+my $verbose       = $ENV{ISLANDHACK_VERBOSE};
 
 my $VERSION = '0.5';
 my $version_info = <<EOF;
@@ -61,7 +62,8 @@ Usage: $0 [options] command [arguments]
 
 Options:
   -d, --cache=DIR     location of cached files (required)
-  -l, --log=FILE      name of log file
+  -l, --log=FILE      save log of client requests to file
+  -v, --verbose       print log of client requests when finished
   -u, --update        download missing files
   --remember-404      in --update mode, store "not-found" responses
   --no-https          disallow HTTPS
@@ -87,6 +89,9 @@ while (@ARGV > 0) {
         }
         elsif ($arg =~ /^(?:-l|--log=)(.*)/) {
             $log_file = $1;
+        }
+        elsif ($arg eq '-v' or $arg eq '--verbose') {
+            $verbose = 1;
         }
         elsif ($arg eq '-u' or $arg eq '--update') {
             $auto_update = 1;
@@ -218,6 +223,10 @@ if (defined $log_file) {
     $log_handle->autoflush(1);
     print $log_handle "## islandhack $VERSION\n";
 }
+my $temp_log_handle;
+if ($verbose) {
+    $temp_log_handle = tmpfile();
+}
 
 # Server socket
 my $server = HTTP::Daemon->new(LocalAddr => '127.0.0.1');
@@ -343,6 +352,9 @@ my $update_ua;
 sub log_msg {
     if ($log_handle) {
         print $log_handle @_, "\n";
+    }
+    if ($temp_log_handle) {
+        print $temp_log_handle @_, "\n";
     }
 }
 
@@ -726,6 +738,15 @@ if ($server_pid == 0) {
 
 my $client_status = run_client;
 close $server_pipe;
+
+if ($verbose) {
+    seek $temp_log_handle, 0, SEEK_SET;
+    print STDERR "________________ Requested URLs ________________\n";
+    while (<$temp_log_handle>) {
+        print STDERR $_;
+    }
+    print STDERR "________________________________________________\n";
+}
 
 my @server_status = split //, $ssbuf->read(0, $SSBUFSIZE);
 foreach my $i (reverse 0 .. $#server_status) {
