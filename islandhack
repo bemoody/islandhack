@@ -237,6 +237,13 @@ my $SS_MISSING_FILE = 2;
 my $SS_BAD_REQUEST = 3;
 my $SS_SERVER_ERROR = 4;
 my $SSBUFSIZE = 5;
+my %server_status_description = (
+    $SS_DOWNLOAD_OK   => 'requested file(s) downloaded and cached',
+    $SS_DOWNLOAD_FAIL => 'requested file(s) unavailable',
+    $SS_MISSING_FILE  => 'requested file(s) not in cache',
+    $SS_BAD_REQUEST   => 'unsupported request(s)',
+    $SS_SERVER_ERROR  => 'unable to fulfill request(s)'
+);
 
 my $ssbuf = IPC::SharedMem->new(IPC_PRIVATE, $SSBUFSIZE, S_IRWXU);
 if (!$ssbuf) {
@@ -721,9 +728,10 @@ my $client_status = run_client;
 close $server_pipe;
 
 my @server_status = split //, $ssbuf->read(0, $SSBUFSIZE);
-foreach my $i (0 .. $#server_status) {
-    if ($server_status[$#server_status - $i]) {
-        exit 200 + $#server_status - $i;
+foreach my $i (reverse 0 .. $#server_status) {
+    if ($server_status[$i]) {
+        print STDERR "$0: ", $server_status_description{$i}, "\n";
+        exit 200 + $i;
     }
 }
 if ($client_status & 127) {
