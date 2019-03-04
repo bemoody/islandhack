@@ -1,4 +1,4 @@
-.TH ISLANDHACK 1 "January 2019" "islandhack 0.4"
+.TH ISLANDHACK 1 "March 2019" "islandhack 0.5"
 .SH NAME
 islandhack \- run a program under a strictly caching proxy
 .SH SYNOPSIS
@@ -36,6 +36,10 @@ details of the directory contents.
 \fB-l\fR, \fB--log\fR \fIfile\fR
 Write a log of network requests, including missing files and the
 corresponding commands to retrieve them, to the given file.
+.TP
+\fB-v\fR, \fB--verbose\fR
+After the program finishes, print a log of network requests to
+standard error.
 .TP
 \fB-u\fR, \fB--update\fR
 Automatically download any files that are missing, and store them in
@@ -128,6 +132,9 @@ Cache directory, if not specified by the \fB--cache\fR option.
 .TP
 \fBISLANDHACK_LOG\fR
 Log file, if not specified by the \fB--log\fR option.
+.TP
+\fBISLANDHACK_VERBOSE\fR
+Set to `1' to display the request log to standard error.
 .TP
 \fBISLANDHACK_AUTO_UPDATE\fR
 Set to `1' to automatically download missing files.
