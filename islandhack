@@ -47,7 +47,7 @@ my $remember_404  = $ENV{ISLANDHACK_REMEMBER_404};
 my $ca_cert_file  = $ENV{ISLANDHACK_CA_CERT};
 my $ca_key_file   = $ENV{ISLANDHACK_CA_KEY};
 
-my $VERSION = '0.4';
+my $VERSION = '0.5';
 my $version_info = <<EOF;
 islandhack $VERSION
 Copyright (C) 2019 Benjamin Moody

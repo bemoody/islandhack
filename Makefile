@@ -11,7 +11,7 @@ CC = gcc
 CFLAGS = -g -O2 -W -Wall -Wmissing-prototypes
 INSTALL = install
 
-distname = islandhack-0.4
+distname = islandhack-0.5
 distfiles = islandhack islandhack-io.c islandhack.1 README COPYING Makefile
 
 library = libislandhack.so.0
