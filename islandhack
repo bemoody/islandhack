@@ -710,7 +710,7 @@ sub run_client {
         my $jks_file = "$ca_tempdir/ca.jks";
         # ignore errors (e.g. keytool not installed)
         system ("keytool -import -file \Q$ca_cert_file\E" .
-                " -keystore \Q$jks_file\E -storepass aaaaaa" .
+                " -keystore \Q$jks_file\E -storetype jks -storepass aaaaaa" .
                 " -noprompt </dev/null 2>/dev/null");
         $java_flags .= " -Djavax.net.ssl.trustStore=$jks_file";
     }
