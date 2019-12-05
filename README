@@ -36,6 +36,17 @@ the scope of this program.
 History
 -------
 
+ 0.5 (2019-12-05):
+   - An error message is displayed when islandhack exits, if the cache
+     has been updated or one or more requests could not be satisfied.
+   - New option '--verbose' to print the log to standard error when
+     islandhack exits.
+   - The server includes the fake CA in its certificate chain.
+   - Fake server keys are now 2048 bits.
+   - The 'keytool' command will work correctly with JDK 9 or newer.
+   - Added a simple test suite, which works by running islandhack
+     recursively.
+
  0.4 (2019-02-12):
    - If 'faketime' is installed, fake certificates are backdated by
      one hour (in case the system clocks are not perfectly
