@@ -320,7 +320,7 @@ if ($enable_https) {
         else {
             # generate a temporary key and certificate
             $ca_key_file = openssl_tempfile(
-                'genrsa', '-rand', '/dev/urandom', '1024');
+                'genrsa', '-rand', '/dev/urandom', '2048');
             $ca_cert_file = openssl_tempfile(
                 'req', '-new', '-x509',
                 '-key', $ca_key_file, '-days', 30,
