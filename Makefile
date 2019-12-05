@@ -25,6 +25,7 @@ distfiles = islandhack islandhack-io.c islandhack.1 README COPYING Makefile \
 library = libislandhack.so.0
 
 all: $(library)
+	chmod a+x islandhack
 
 $(library): islandhack-io.o
 	$(CC) $(CFLAGS) $(LDFLAGS) -shared -Wl,-soname,$(library) \
