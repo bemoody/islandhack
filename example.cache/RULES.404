@@ -1,0 +1,3 @@
+http://hello\.test/missing	404
+https://hello\.test/missing	404
+ftp://hello\.test/missing	404

@@ -11,8 +11,16 @@ CC = gcc
 CFLAGS = -g -O2 -W -Wall -Wmissing-prototypes
 INSTALL = install
 
+# Tools used for 'make check'
+CURL = curl
+WGET = wget
+JAVA = java
+JAVAC = javac
+PYTHON = python3
+
 distname = islandhack-0.5
-distfiles = islandhack islandhack-io.c islandhack.1 README COPYING Makefile
+distfiles = islandhack islandhack-io.c islandhack.1 README COPYING Makefile \
+            test-client.sh geturl.java geturl.py example.cache
 
 library = libislandhack.so.0
 
@@ -28,6 +36,7 @@ islandhack-io.o: islandhack-io.c
 clean:
 	rm -f *.o *.so $(library)
 	rm -f islandhack.tmp
+	rm -rf *.class tmpcache*
 
 install: islandhack $(library)
 	$(INSTALL) -d $(DESTDIR)$(libdir)
@@ -50,10 +59,26 @@ uninstall:
 	rm -f $(DESTDIR)$(libdir)/$(library)
 	rm -f $(DESTDIR)$(man1dir)/islandhack.1
 
+check: check-wget check-curl check-java check-python
+
+check-wget: all
+	sh test-client.sh ./islandhack tmpcache-wget "$(WGET) -O -"
+
+check-curl: all
+	sh test-client.sh ./islandhack tmpcache-curl "$(CURL) -f"
+
+check-java: all
+	$(JAVAC) $(JAVACFLAGS) geturl.java
+	sh test-client.sh ./islandhack tmpcache-java "$(JAVA) -cp . geturl"
+
+check-python: all
+	sh test-client.sh ./islandhack tmpcache-python "$(PYTHON) ./geturl.py"
+
 dist:
 	rm -rf $(distname)
 	mkdir $(distname)
-	cp -p $(distfiles) $(distname)
+	cp -pr $(distfiles) $(distname)
 	tar cv $(distname) | gzip -9 > $(distname).tar.gz
 
-.PHONY: all clean install uninstall dist
+.PHONY: all clean install uninstall dist check \
+	check-wget check-curl check-java check-python
